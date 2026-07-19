@@ -322,6 +322,41 @@ async def cmd_list_admin(event, match):
     body = "\n".join(f"`{a}`" for a in admins) if admins else "（空）"
     await event.reply(f"👮 群文件管理员白名单（{len(admins)}）：\n{body}", msg_type=2)
 
+@handler(r'^(群文件菜单|群文件帮助)$', name='群文件菜单', desc='查看群文件管理操作(仅管理员)', priority=100, block=True, ignore_at_check=True)
+async def cmd_menu(event, match):
+    if not await _require_admin(event):
+        return
+    base = get_base_url()
+    admins = get_admins()
+    has_ck = "已登录" if get_user_cookie(event.user_id) else "未登录"
+    lines = [
+        "🗂 群文件管理菜单（仅管理员可见）",
+        "",
+        "【登录】",
+        "· 登录 —— 聊天内出二维码扫码登录并自动提取CK",
+        "  别名：登录群文件 / 刷新 / 刷新二维码",
+        "· 登录网页 —— 获取浏览器扫码链接(图片扫不了时用)",
+        "· 群文件登录 <cookie> —— 手动粘贴 Cookie",
+        "",
+        "【清理】",
+        "· 清空群文件 <群号> —— 清空该群所有文件(用你自己的CK)",
+        "",
+        "【配置】",
+        "· 设置登录地址 <URL> —— 配置登录页外网地址",
+        "",
+        "【白名单】",
+        "· 添加管理员 @用户 / 管理员添加",
+        "· 删除管理员 @用户 / 管理员删除",
+        "· 管理员列表",
+        "",
+        "—— 当前状态 ——",
+        f"· 登录页地址：{base or '未配置'}",
+        f"· 你的登录状态：{has_ck}",
+        f"· 管理员人数：{len(admins)}",
+    ]
+    await event.reply("\n".join(lines))
+
+
 @handler(r'^清空群文件\s*(\d+)$', name='清空群文件', desc='清空指定群的所有文件（管理员用）', priority=100, block=True, ignore_at_check=True)
 async def cmd_clear_files(event, match):
     if not await _require_admin(event):
