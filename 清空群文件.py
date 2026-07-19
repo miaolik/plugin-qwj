@@ -219,13 +219,13 @@ async def _qr_login_flow(event):
         await qr.close()
 
 
-@handler(r'^(登录群文件|登录|刷新|刷新二维码)$', name='登录群文件', desc='聊天内出二维码扫码登录并自动提取CK')
+@handler(r'^(登录群文件|登录|刷新|刷新二维码)$', name='登录群文件', desc='聊天内出二维码扫码登录并自动提取CK', priority=100)
 async def cmd_login(event, match):
     if not await _require_admin(event):
         return
     await _qr_login_flow(event)
 
-@handler(r'^(登录网页|网页登录)$', name='登录网页', desc='获取浏览器扫码登录链接（图片扫不了时用）')
+@handler(r'^(登录网页|网页登录)$', name='登录网页', desc='获取浏览器扫码登录链接（图片扫不了时用）', priority=100)
 async def cmd_login_web(event, match):
     """下发后端登录网页链接：适合聊天里图片扫不了的 QQ，网页内实时出码、过期自动刷新。"""
     if not await _require_admin(event):
@@ -252,7 +252,7 @@ async def cmd_login_web(event, match):
         msg_type=2,
     )
 
-@handler(r'^设置登录地址\s+(\S+)$', name='设置登录地址', desc='配置登录页外网地址')
+@handler(r'^设置登录地址\s+(\S+)$', name='设置登录地址', desc='配置登录页外网地址', priority=100, block=True)
 async def cmd_set_base(event, match):
     if not await _require_admin(event):
         return
@@ -264,7 +264,7 @@ async def cmd_set_base(event, match):
     log_user(event.user_id, "设置登录地址")
     await event.reply(f"✅ 已保存登录页地址：\n`{url.rstrip('/')}`\n现在可发送「登录」获取登录链接～", msg_type=2)
 
-@handler(r'^群文件登录\s+(.+)', name='群文件登录', desc='保存当前管理员的群文件Cookie')
+@handler(r'^群文件登录\s+(.+)', name='群文件登录', desc='保存当前管理员的群文件Cookie', priority=100, block=True)
 async def cmd_save_cookie(event, match):
     if not await _require_admin(event):
         return
@@ -276,7 +276,7 @@ async def cmd_save_cookie(event, match):
     log_user(event.user_id, "更新Cookie")
     await event.reply("✅ Cookie 已保存，31天内有效～")
 
-@handler(r'^(添加管理员|新增管理员)(?:\s+(.*))?$', name='添加管理员', desc='把用户(可艾特)加入群文件管理员白名单')
+@handler(r'^(添加管理员|新增管理员|管理员添加|管理员新增)(?:\s+(.*))?$', name='添加管理员', desc='把用户(可艾特)加入群文件管理员白名单', priority=100, block=True)
 async def cmd_add_admin(event, match):
     if not await _require_admin(event):
         return
@@ -295,7 +295,7 @@ async def cmd_add_admin(event, match):
         lines.append("ℹ️ 已在名单中：\n" + "\n".join(f"`{a}`" for a in existed))
     await event.reply("\n".join(lines), msg_type=2)
 
-@handler(r'^删除管理员(?:\s+(.*))?$', name='删除管理员', desc='把用户(可艾特)移出群文件管理员白名单')
+@handler(r'^(?:删除管理员|管理员删除|移除管理员|管理员移除)(?:\s+(.*))?$', name='删除管理员', desc='把用户(可艾特)移出群文件管理员白名单', priority=100, block=True)
 async def cmd_del_admin(event, match):
     if not await _require_admin(event):
         return
@@ -314,7 +314,7 @@ async def cmd_del_admin(event, match):
         lines.append("ℹ️ 不在名单中：\n" + "\n".join(f"`{a}`" for a in missing))
     await event.reply("\n".join(lines), msg_type=2)
 
-@handler(r'^管理员列表$', name='管理员列表', desc='查看群文件管理员白名单')
+@handler(r'^(管理员列表|群文件管理员列表)$', name='管理员列表', desc='查看群文件管理员白名单', priority=100, block=True)
 async def cmd_list_admin(event, match):
     if not await _require_admin(event):
         return
@@ -322,7 +322,7 @@ async def cmd_list_admin(event, match):
     body = "\n".join(f"`{a}`" for a in admins) if admins else "（空）"
     await event.reply(f"👮 群文件管理员白名单（{len(admins)}）：\n{body}", msg_type=2)
 
-@handler(r'^清空群文件\s+(\d+)$', name='清空群文件', desc='清空指定群的所有文件（管理员用）')
+@handler(r'^清空群文件\s+(\d+)$', name='清空群文件', desc='清空指定群的所有文件（管理员用）', priority=100, block=True)
 async def cmd_clear_files(event, match):
     if not await _require_admin(event):
         return
