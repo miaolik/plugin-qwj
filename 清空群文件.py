@@ -3,12 +3,10 @@
 指令（主人全局）：登录、设置登录地址 <url>、群文件登录 <cookie>、清空群文件 <群号>
 """
 import json
-import time
 import asyncio
 import aiohttp
 from core.plugin.decorators import handler
 
-from . import store
 from .store import (
     log, get_user_cookie, set_user_cookie, get_skey, calc_bkn,
     get_base_url, set_base_url, create_login_token,
