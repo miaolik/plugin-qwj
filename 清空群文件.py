@@ -11,7 +11,8 @@ from core.plugin.decorators import handler
 
 from .qr_login import QRSession
 from .store import (
-    log, get_user_cookie, set_user_cookie, get_skey, calc_bkn,
+    log, log_user, ensure_admin_dirs,
+    get_user_cookie, set_user_cookie, get_skey, calc_bkn,
     get_base_url, set_base_url, create_login_token,
     is_admin, add_admin, remove_admin, get_admins,
 )
@@ -189,7 +190,7 @@ async def _qr_login_flow(event):
             status = res.get("status")
             if status == "success":
                 set_user_cookie(event.user_id, res["cookie"])
-                log(f"用户 {event.user_id} 扫码登录成功，已保存CK")
+                log_user(event.user_id, "扫码登录成功，已保存CK")
                 await event.reply("✅ 登录成功，CK 已自动提取并保存！现在发「清空群文件 群号」即可～")
                 return
             if status == "scanned" and last_status != "scanned":
@@ -218,13 +219,13 @@ async def _qr_login_flow(event):
         await qr.close()
 
 
-@handler(r'^(登录群文件|登录|刷新|刷新二维码)$', name='登录群文件', desc='聊天内出二维码扫码登录并自动提取CK')
+@handler(r'^(登录群文件|登录|刷新|刷新二维码)$', name='登录群文件', desc='聊天内出二维码扫码登录并自动提取CK', priority=100)
 async def cmd_login(event, match):
     if not await _require_admin(event):
         return
     await _qr_login_flow(event)
 
-@handler(r'^(登录网页|网页登录)$', name='登录网页', desc='获取浏览器扫码登录链接（图片扫不了时用）')
+@handler(r'^(登录网页|网页登录)$', name='登录网页', desc='获取浏览器扫码登录链接（图片扫不了时用）', priority=100)
 async def cmd_login_web(event, match):
     """下发后端登录网页链接：适合聊天里图片扫不了的 QQ，网页内实时出码、过期自动刷新。"""
     if not await _require_admin(event):
@@ -239,7 +240,7 @@ async def cmd_login_web(event, match):
         return
     token = create_login_token(event.user_id)
     url = f"{base}/api/ext/qwj/login?token={token}"
-    log(f"用户 {event.user_id} 生成登录链接")
+    log_user(event.user_id, "生成登录链接")
     content = (
         "🔑 点下方按钮打开登录页（或复制链接到浏览器），用**群主/管理员**手机 QQ 扫码：\n"
         f"`{url}`\n\n二维码在网页里实时生成、过期会自动刷新；扫码确认后 CK 自动保存，"
@@ -251,7 +252,7 @@ async def cmd_login_web(event, match):
         msg_type=2,
     )
 
-@handler(r'^设置登录地址\s+(\S+)$', name='设置登录地址', desc='配置登录页外网地址')
+@handler(r'^设置登录地址\s*(\S+)$', name='设置登录地址', desc='配置登录页外网地址', priority=100, block=True)
 async def cmd_set_base(event, match):
     if not await _require_admin(event):
         return
@@ -260,10 +261,10 @@ async def cmd_set_base(event, match):
         await event.reply("❌ 地址需以 http:// 或 https:// 开头～")
         return
     set_base_url(url)
-    log(f"用户 {event.user_id} 设置登录地址")
+    log_user(event.user_id, "设置登录地址")
     await event.reply(f"✅ 已保存登录页地址：\n`{url.rstrip('/')}`\n现在可发送「登录」获取登录链接～", msg_type=2)
 
-@handler(r'^群文件登录\s+(.+)', name='群文件登录', desc='保存当前管理员的群文件Cookie')
+@handler(r'^群文件登录\s*(.+)', name='群文件登录', desc='保存当前管理员的群文件Cookie', priority=100, block=True)
 async def cmd_save_cookie(event, match):
     if not await _require_admin(event):
         return
@@ -272,10 +273,10 @@ async def cmd_save_cookie(event, match):
         await event.reply("❌ Cookie 无效，缺少 skey 字段～")
         return
     set_user_cookie(event.user_id, cookie_str)
-    log(f"用户 {event.user_id} 更新Cookie")
+    log_user(event.user_id, "更新Cookie")
     await event.reply("✅ Cookie 已保存，31天内有效～")
 
-@handler(r'^(添加管理员|新增管理员)(?:\s+(.*))?$', name='添加管理员', desc='把用户(可艾特)加入群文件管理员白名单')
+@handler(r'^(添加管理员|新增管理员|管理员添加|管理员新增)\s*(.*)$', name='添加管理员', desc='把用户(可艾特)加入群文件管理员白名单', priority=100, block=True)
 async def cmd_add_admin(event, match):
     if not await _require_admin(event):
         return
@@ -286,7 +287,7 @@ async def cmd_add_admin(event, match):
     added, existed = [], []
     for t in targets:
         (added if add_admin(t) else existed).append(t)
-    log(f"用户 {event.user_id} 添加管理员 added={added} existed={existed}")
+    log_user(event.user_id, f"添加管理员 added={added} existed={existed}")
     lines = []
     if added:
         lines.append("✅ 已添加管理员：\n" + "\n".join(f"`{a}`" for a in added))
@@ -294,7 +295,7 @@ async def cmd_add_admin(event, match):
         lines.append("ℹ️ 已在名单中：\n" + "\n".join(f"`{a}`" for a in existed))
     await event.reply("\n".join(lines), msg_type=2)
 
-@handler(r'^删除管理员(?:\s+(.*))?$', name='删除管理员', desc='把用户(可艾特)移出群文件管理员白名单')
+@handler(r'^(?:删除管理员|管理员删除|移除管理员|管理员移除)\s*(.*)$', name='删除管理员', desc='把用户(可艾特)移出群文件管理员白名单', priority=100, block=True)
 async def cmd_del_admin(event, match):
     if not await _require_admin(event):
         return
@@ -305,7 +306,7 @@ async def cmd_del_admin(event, match):
     removed, missing = [], []
     for t in targets:
         (removed if remove_admin(t) else missing).append(t)
-    log(f"用户 {event.user_id} 删除管理员 removed={removed} missing={missing}")
+    log_user(event.user_id, f"删除管理员 removed={removed} missing={missing}")
     lines = []
     if removed:
         lines.append("✅ 已移除管理员：\n" + "\n".join(f"`{a}`" for a in removed))
@@ -313,7 +314,7 @@ async def cmd_del_admin(event, match):
         lines.append("ℹ️ 不在名单中：\n" + "\n".join(f"`{a}`" for a in missing))
     await event.reply("\n".join(lines), msg_type=2)
 
-@handler(r'^管理员列表$', name='管理员列表', desc='查看群文件管理员白名单')
+@handler(r'^(管理员列表|群文件管理员列表)$', name='管理员列表', desc='查看群文件管理员白名单', priority=100, block=True)
 async def cmd_list_admin(event, match):
     if not await _require_admin(event):
         return
@@ -321,13 +322,13 @@ async def cmd_list_admin(event, match):
     body = "\n".join(f"`{a}`" for a in admins) if admins else "（空）"
     await event.reply(f"👮 群文件管理员白名单（{len(admins)}）：\n{body}", msg_type=2)
 
-@handler(r'^清空群文件\s+(\d+)$', name='清空群文件', desc='清空指定群的所有文件（管理员用）')
+@handler(r'^清空群文件\s*(\d+)$', name='清空群文件', desc='清空指定群的所有文件（管理员用）', priority=100, block=True)
 async def cmd_clear_files(event, match):
     if not await _require_admin(event):
         return
     group_id = match.group(1)
     user_id = event.user_id
-    log(f"用户 {user_id} 请求清空群 {group_id}")
+    log_user(user_id, f"请求清空群 {group_id}")
 
     cookie_str = get_user_cookie(user_id)
     if not cookie_str:
@@ -361,8 +362,9 @@ async def cmd_clear_files(event, match):
         tasks = [delete_batch(session, group_id, cookie_str, batch) for batch in batches]
         results = await asyncio.gather(*tasks)
         success_count = sum(1 for r in results if r)
-        log(f"删除完成，成功 {success_count}/{len(batches)} 批")
+        log_user(user_id, f"清空群 {group_id} 完成，成功 {success_count}/{len(batches)} 批，共 {total} 个文件")
 
     await event.reply(f"✅ 清理完成，群 {group_id} 共处理 {total} 个文件～")
 
+ensure_admin_dirs()
 log("群文件管理插件已加载")

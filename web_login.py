@@ -134,7 +134,7 @@ async def api_qr_poll(request):
     status = res.get("status")
     if status == "success":
         store.set_user_cookie(sess["uid"], res["cookie"])
-        store.log(f"用户 {sess['uid']} 网页扫码登录成功，已保存CK")
+        store.log_user(sess["uid"], "网页扫码登录成功，已保存CK")
         await sess["qr"].close()
         _SESSIONS.pop(sid, None)
         return web.json_response({"status": "success"})
