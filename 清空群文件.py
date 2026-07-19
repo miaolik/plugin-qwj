@@ -1,12 +1,14 @@
 """
 群文件管理插件 - 每批20个文件，重算bkn，高并发无延迟重试
-指令（主人全局）：登录、设置登录地址 <url>、群文件登录 <cookie>、清空群文件 <群号>
+指令（白名单管理员）：登录、刷新、登录网页、设置登录地址 <url>、群文件登录 <cookie>、清空群文件 <群号>
 """
 import json
+import time
 import asyncio
 import aiohttp
 from core.plugin.decorators import handler
 
+from .qr_login import QRSession
 from .store import (
     log, get_user_cookie, set_user_cookie, get_skey, calc_bkn,
     get_base_url, set_base_url, create_login_token,
@@ -126,9 +128,73 @@ async def delete_batch(session, group_id, cookie_str, batch_files, max_retries=3
     return False
 
 # ---------- 指令 ----------
-@handler(r'^(登录群文件|登录)$', name='登录群文件', desc='获取扫码登录链接并自动提取CK')
+# 单次会话内自动刷新的最多次数（受 QQ 被动回复条数限制，控制在安全范围）
+_MAX_AUTO_REFRESH = 2
+# 会话轮询总时长（秒），保持在 QQ 被动消息 5 分钟窗口内
+_LOGIN_DEADLINE = 240
+
+
+async def _qr_login_flow(event):
+    """在当前会话里直接发二维码图片：过期自动换新，扫码成功后原地提示登录成功。"""
+    qr = QRSession()
+    try:
+        try:
+            png = await qr.fetch_qr()
+        except Exception as e:
+            log(f"获取二维码失败: {e}")
+            await event.reply("❌ 获取二维码失败，请稍后重试～")
+            return
+        await event.reply_image(
+            png, "📱 请用群主/管理员手机 QQ「扫一扫」扫描此码并确认；过期会自动换新，也可发「刷新」。"
+        )
+
+        refreshes = 0
+        last_status = ""
+        deadline = time.time() + _LOGIN_DEADLINE
+        while time.time() < deadline:
+            await asyncio.sleep(2)
+            res = await qr.poll()
+            status = res.get("status")
+            if status == "success":
+                set_user_cookie(event.user_id, res["cookie"])
+                log(f"用户 {event.user_id} 扫码登录成功，已保存CK")
+                await event.reply("✅ 登录成功，CK 已自动提取并保存！现在发「清空群文件 群号」即可～")
+                return
+            if status == "scanned" and last_status != "scanned":
+                await event.reply("📲 已扫码，请在手机上点「确认登录」～")
+            if status == "expired":
+                if refreshes >= _MAX_AUTO_REFRESH:
+                    await event.reply("⌛ 二维码多次过期，请重新发「登录」或「刷新」～")
+                    return
+                refreshes += 1
+                try:
+                    png = await qr.fetch_qr()
+                except Exception as e:
+                    log(f"刷新二维码失败: {e}")
+                    await event.reply("❌ 刷新二维码失败，请重新发「登录」～")
+                    return
+                await event.reply_image(png, f"🔄 二维码已自动刷新（第 {refreshes} 次），请尽快扫描～")
+                last_status = ""
+                continue
+            if status == "error":
+                log(f"扫码登录错误: {res.get('message')}")
+                await event.reply(f"❌ 登录失败：{res.get('message')}")
+                return
+            last_status = status
+        await event.reply("⌛ 登录超时，请重新发「登录」～")
+    finally:
+        await qr.close()
+
+
+@handler(r'^(登录群文件|登录|刷新|刷新二维码)$', name='登录群文件', desc='聊天内出二维码扫码登录并自动提取CK')
 async def cmd_login(event, match):
-    """发送带令牌的登录链接：管理员在浏览器打开→扫码→后端自动提取并保存 CK。"""
+    if not await _require_admin(event):
+        return
+    await _qr_login_flow(event)
+
+@handler(r'^(登录网页|网页登录)$', name='登录网页', desc='获取浏览器扫码登录链接（图片扫不了时用）')
+async def cmd_login_web(event, match):
+    """下发后端登录网页链接：适合聊天里图片扫不了的 QQ，网页内实时出码、过期自动刷新。"""
     if not await _require_admin(event):
         return
     base = get_base_url()
@@ -136,7 +202,7 @@ async def cmd_login(event, match):
         await event.reply(
             "⚠ 还没配置登录页地址。请先发送：\n"
             "设置登录地址 https://你的面板域名:5200\n"
-            "（填写机器人 Web 面板的外网可访问地址，然后再发「登录」）"
+            "（填写机器人 Web 面板的外网可访问地址，然后再发「登录网页」）"
         )
         return
     token = create_login_token(event.user_id)
