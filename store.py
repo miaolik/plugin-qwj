@@ -11,8 +11,9 @@ from datetime import datetime
 
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_DIR = os.path.join(PLUGIN_DIR, "json")
-CK_DIR = os.path.join(STATE_DIR, "ck")  # 每个用户单独一个 <用户ID>.json
-COOKIE_FILE = os.path.join(STATE_DIR, "pancookie.json")  # 旧版单文件，自动迁移
+USERS_DIR = os.path.join(STATE_DIR, "users")  # 每个用户一个目录：users/<用户ID>/{ck.json,log.txt}
+CK_DIR = os.path.join(STATE_DIR, "ck")  # 旧版每用户单文件，自动迁移
+COOKIE_FILE = os.path.join(STATE_DIR, "pancookie.json")  # 更旧版单文件，自动迁移
 CONFIG_FILE = os.path.join(STATE_DIR, "config.json")
 TOKEN_FILE = os.path.join(STATE_DIR, "tokens.json")
 LOG_FILE = os.path.join(PLUGIN_DIR, "mm.txt")
@@ -48,42 +49,89 @@ def _write_json(path: str, data: dict):
         json.dump(data, f)
 
 
-# ---------- Cookie（每个用户一个文件：json/ck/<用户ID>.json）----------
+# ---------- 用户目录（每个用户一个文件夹：json/users/<用户ID>/）----------
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_-]")
 
 
-def _ck_path(user_id: str) -> str:
-    safe = _SAFE_ID_RE.sub("_", str(user_id))
-    return os.path.join(CK_DIR, f"{safe}.json")
+def _safe_id(user_id) -> str:
+    return _SAFE_ID_RE.sub("_", str(user_id))
 
 
-def _migrate_legacy_cookies():
-    """把旧的单文件 pancookie.json 拆分成每用户一个文件，迁移后重命名旧文件。"""
-    if not os.path.exists(COOKIE_FILE):
-        return
-    data = _read_json(COOKIE_FILE)
-    for uid, info in data.items():
-        if isinstance(info, dict) and info.get("cookie"):
-            path = _ck_path(uid)
-            if not os.path.exists(path):
-                os.makedirs(CK_DIR, exist_ok=True)
-                with open(path, "w", encoding="utf-8") as f:
-                    json.dump({"user_id": str(uid), "cookie": info["cookie"],
-                               "expire": info.get("expire", 0)}, f)
+def user_dir(user_id) -> str:
+    return os.path.join(USERS_DIR, _safe_id(user_id))
+
+
+def ensure_user_dir(user_id) -> str:
+    path = user_dir(user_id)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _ck_file(user_id: str) -> str:
+    return os.path.join(user_dir(user_id), "ck.json")
+
+
+def _user_log_file(user_id: str) -> str:
+    return os.path.join(user_dir(user_id), "log.txt")
+
+
+def log_user(user_id, msg: str):
+    """写入该用户目录下的 log.txt，同时并入全局日志。"""
+    log(msg)
     try:
-        os.replace(COOKIE_FILE, COOKIE_FILE + ".migrated")
+        ensure_user_dir(user_id)
+        line = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
+        with open(_user_log_file(user_id), "a", encoding="utf-8") as f:
+            f.write(line + "\n")
     except Exception:
         pass
 
 
+def _migrate_legacy_cookies():
+    """把旧存储迁移到 users/<ID>/ck.json：
+    1) json/ck/<ID>.json（上一版每用户单文件）
+    2) json/pancookie.json（更旧的单文件字典）
+    迁移后把来源改名，避免重复迁移。
+    """
+    # 1) ck/<ID>.json
+    if os.path.isdir(CK_DIR):
+        for name in os.listdir(CK_DIR):
+            if not name.endswith(".json"):
+                continue
+            info = _read_json(os.path.join(CK_DIR, name))
+            uid = info.get("user_id") or name[:-5]
+            if info.get("cookie") and not os.path.exists(_ck_file(uid)):
+                ensure_user_dir(uid)
+                with open(_ck_file(uid), "w", encoding="utf-8") as f:
+                    json.dump({"user_id": str(uid), "cookie": info["cookie"],
+                               "expire": info.get("expire", 0)}, f)
+        try:
+            os.replace(CK_DIR, CK_DIR + ".migrated")
+        except Exception:
+            pass
+    # 2) pancookie.json
+    if os.path.exists(COOKIE_FILE):
+        data = _read_json(COOKIE_FILE)
+        for uid, info in data.items():
+            if isinstance(info, dict) and info.get("cookie") and not os.path.exists(_ck_file(uid)):
+                ensure_user_dir(uid)
+                with open(_ck_file(uid), "w", encoding="utf-8") as f:
+                    json.dump({"user_id": str(uid), "cookie": info["cookie"],
+                               "expire": info.get("expire", 0)}, f)
+        try:
+            os.replace(COOKIE_FILE, COOKIE_FILE + ".migrated")
+        except Exception:
+            pass
+
+
 def get_user_cookie(user_id: str):
     _migrate_legacy_cookies()
-    info = _read_json(_ck_path(user_id))
+    info = _read_json(_ck_file(user_id))
     if not info or not info.get("cookie"):
         return None
     if info.get("expire", 0) <= time.time():
         try:
-            os.remove(_ck_path(user_id))
+            os.remove(_ck_file(user_id))
         except Exception:
             pass
         return None
@@ -91,8 +139,8 @@ def get_user_cookie(user_id: str):
 
 
 def set_user_cookie(user_id: str, cookie_str: str):
-    os.makedirs(CK_DIR, exist_ok=True)
-    with open(_ck_path(user_id), "w", encoding="utf-8") as f:
+    ensure_user_dir(user_id)
+    with open(_ck_file(user_id), "w", encoding="utf-8") as f:
         json.dump({"user_id": str(user_id), "cookie": cookie_str,
                    "expire": time.time() + COOKIE_TTL}, f)
 
@@ -128,8 +176,14 @@ def is_admin(user_id) -> bool:
     return str(user_id) in get_admins()
 
 
+def ensure_admin_dirs():
+    """为所有管理员（含预置）建好各自的用户目录。"""
+    for uid in get_admins():
+        ensure_user_dir(uid)
+
+
 def add_admin(user_id) -> bool:
-    """返回 True 表示新增成功，False 表示已存在。"""
+    """返回 True 表示新增成功，False 表示已存在。新增时自动建好其用户目录。"""
     admins = get_admins()
     if str(user_id) in admins:
         return False
@@ -137,6 +191,7 @@ def add_admin(user_id) -> bool:
     data = _read_json(CONFIG_FILE)
     data["admins"] = admins
     _write_json(CONFIG_FILE, data)
+    ensure_user_dir(user_id)
     return True
 
 
