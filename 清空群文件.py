@@ -2,6 +2,7 @@
 群文件管理插件 - 每批20个文件，重算bkn，高并发无延迟重试
 指令（白名单管理员）：登录、刷新、登录网页、设置登录地址 <url>、群文件登录 <cookie>、清空群文件 <群号>
 """
+import re
 import json
 import time
 import asyncio
@@ -19,6 +20,37 @@ from .store import (
 async def _require_admin(event) -> bool:
     """仅白名单管理员可操作；非管理员静默忽略，避免打扰普通用户。"""
     return is_admin(event.user_id)
+
+
+_AT_RE = re.compile(r'<@!?([A-Za-z0-9]+)>')
+
+
+def _extract_target_ids(event, arg: str) -> list:
+    """从被艾特对象(event.mentions)及文本参数中提取目标用户 ID。
+
+    支持：添加管理员 @用户 / 添加管理员 <ID> / 添加管理员 @用户A @用户B。
+    （event.content 会剔除 <@id> 标签，真实 ID 从 mentions 取；手动填写时从文本取。）
+    """
+    ids = []
+    for m in (event.mentions or []):
+        if not isinstance(m, dict):
+            continue
+        if m.get('is_you') or m.get('bot') or m.get('scope') == 'all':
+            continue
+        mid = m.get('id')
+        if mid:
+            ids.append(str(mid))
+    if arg:
+        ids.extend(_AT_RE.findall(arg))
+        for tok in _AT_RE.sub(' ', arg).split():
+            ids.append(tok)
+    seen = set()
+    out = []
+    for i in ids:
+        if i and i not in seen:
+            seen.add(i)
+            out.append(i)
+    return out
 
 
 async def safe_json(text: str) -> dict | None:
@@ -243,29 +275,43 @@ async def cmd_save_cookie(event, match):
     log(f"用户 {event.user_id} 更新Cookie")
     await event.reply("✅ Cookie 已保存，31天内有效～")
 
-@handler(r'^(添加管理员|新增管理员)\s+(\S+)$', name='添加管理员', desc='把用户加入群文件管理员白名单')
+@handler(r'^(添加管理员|新增管理员)(?:\s+(.*))?$', name='添加管理员', desc='把用户(可艾特)加入群文件管理员白名单')
 async def cmd_add_admin(event, match):
     if not await _require_admin(event):
         return
-    target = match.group(2).strip()
-    ok = add_admin(target)
-    log(f"用户 {event.user_id} 添加管理员 {target} -> {ok}")
-    if ok:
-        await event.reply(f"✅ 已添加管理员：\n`{target}`", msg_type=2)
-    else:
-        await event.reply("ℹ️ 该用户已在管理员名单中～")
+    targets = _extract_target_ids(event, (match.group(2) or "").strip())
+    if not targets:
+        await event.reply("用法：添加管理员 @用户（或 添加管理员 <用户ID>）～")
+        return
+    added, existed = [], []
+    for t in targets:
+        (added if add_admin(t) else existed).append(t)
+    log(f"用户 {event.user_id} 添加管理员 added={added} existed={existed}")
+    lines = []
+    if added:
+        lines.append("✅ 已添加管理员：\n" + "\n".join(f"`{a}`" for a in added))
+    if existed:
+        lines.append("ℹ️ 已在名单中：\n" + "\n".join(f"`{a}`" for a in existed))
+    await event.reply("\n".join(lines), msg_type=2)
 
-@handler(r'^删除管理员\s+(\S+)$', name='删除管理员', desc='把用户移出群文件管理员白名单')
+@handler(r'^删除管理员(?:\s+(.*))?$', name='删除管理员', desc='把用户(可艾特)移出群文件管理员白名单')
 async def cmd_del_admin(event, match):
     if not await _require_admin(event):
         return
-    target = match.group(1).strip()
-    ok = remove_admin(target)
-    log(f"用户 {event.user_id} 删除管理员 {target} -> {ok}")
-    if ok:
-        await event.reply(f"✅ 已移除管理员：\n`{target}`", msg_type=2)
-    else:
-        await event.reply("ℹ️ 该用户不在管理员名单中～")
+    targets = _extract_target_ids(event, (match.group(1) or "").strip())
+    if not targets:
+        await event.reply("用法：删除管理员 @用户（或 删除管理员 <用户ID>）～")
+        return
+    removed, missing = [], []
+    for t in targets:
+        (removed if remove_admin(t) else missing).append(t)
+    log(f"用户 {event.user_id} 删除管理员 removed={removed} missing={missing}")
+    lines = []
+    if removed:
+        lines.append("✅ 已移除管理员：\n" + "\n".join(f"`{a}`" for a in removed))
+    if missing:
+        lines.append("ℹ️ 不在名单中：\n" + "\n".join(f"`{a}`" for a in missing))
+    await event.reply("\n".join(lines), msg_type=2)
 
 @handler(r'^管理员列表$', name='管理员列表', desc='查看群文件管理员白名单')
 async def cmd_list_admin(event, match):
