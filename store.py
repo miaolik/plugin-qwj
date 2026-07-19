@@ -11,7 +11,8 @@ from datetime import datetime
 
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_DIR = os.path.join(PLUGIN_DIR, "json")
-COOKIE_FILE = os.path.join(STATE_DIR, "pancookie.json")
+CK_DIR = os.path.join(STATE_DIR, "ck")  # 每个用户单独一个 <用户ID>.json
+COOKIE_FILE = os.path.join(STATE_DIR, "pancookie.json")  # 旧版单文件，自动迁移
 CONFIG_FILE = os.path.join(STATE_DIR, "config.json")
 TOKEN_FILE = os.path.join(STATE_DIR, "tokens.json")
 LOG_FILE = os.path.join(PLUGIN_DIR, "mm.txt")
@@ -47,26 +48,53 @@ def _write_json(path: str, data: dict):
         json.dump(data, f)
 
 
-# ---------- Cookie ----------
-def load_cookies() -> dict:
+# ---------- Cookie（每个用户一个文件：json/ck/<用户ID>.json）----------
+_SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def _ck_path(user_id: str) -> str:
+    safe = _SAFE_ID_RE.sub("_", str(user_id))
+    return os.path.join(CK_DIR, f"{safe}.json")
+
+
+def _migrate_legacy_cookies():
+    """把旧的单文件 pancookie.json 拆分成每用户一个文件，迁移后重命名旧文件。"""
+    if not os.path.exists(COOKIE_FILE):
+        return
     data = _read_json(COOKIE_FILE)
-    now = time.time()
-    valid = {u: i for u, i in data.items()
-             if isinstance(i, dict) and i.get("expire", 0) > now}
-    if len(valid) != len(data):
-        _write_json(COOKIE_FILE, valid)
-    return valid
+    for uid, info in data.items():
+        if isinstance(info, dict) and info.get("cookie"):
+            path = _ck_path(uid)
+            if not os.path.exists(path):
+                os.makedirs(CK_DIR, exist_ok=True)
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump({"user_id": str(uid), "cookie": info["cookie"],
+                               "expire": info.get("expire", 0)}, f)
+    try:
+        os.replace(COOKIE_FILE, COOKIE_FILE + ".migrated")
+    except Exception:
+        pass
 
 
 def get_user_cookie(user_id: str):
-    info = load_cookies().get(str(user_id))
-    return info.get("cookie") if info else None
+    _migrate_legacy_cookies()
+    info = _read_json(_ck_path(user_id))
+    if not info or not info.get("cookie"):
+        return None
+    if info.get("expire", 0) <= time.time():
+        try:
+            os.remove(_ck_path(user_id))
+        except Exception:
+            pass
+        return None
+    return info["cookie"]
 
 
 def set_user_cookie(user_id: str, cookie_str: str):
-    cookies = load_cookies()
-    cookies[str(user_id)] = {"cookie": cookie_str, "expire": time.time() + COOKIE_TTL}
-    _write_json(COOKIE_FILE, cookies)
+    os.makedirs(CK_DIR, exist_ok=True)
+    with open(_ck_path(user_id), "w", encoding="utf-8") as f:
+        json.dump({"user_id": str(user_id), "cookie": cookie_str,
+                   "expire": time.time() + COOKIE_TTL}, f)
 
 
 def get_skey(cookie_str: str):
