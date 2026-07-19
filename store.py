@@ -82,6 +82,48 @@ def calc_bkn(skey: str) -> int:
     return h & 0x7fffffff
 
 
+# ---------- 管理员白名单 ----------
+# 预置管理员（首次运行自动写入 config.json，可用指令增删）
+DEFAULT_ADMINS = ["538389445D765D2988BFE31506C54799"]
+
+
+def get_admins() -> list:
+    data = _read_json(CONFIG_FILE)
+    if "admins" not in data:
+        data["admins"] = list(DEFAULT_ADMINS)
+        _write_json(CONFIG_FILE, data)
+    admins = data.get("admins") or []
+    return [str(a) for a in admins]
+
+
+def is_admin(user_id) -> bool:
+    return str(user_id) in get_admins()
+
+
+def add_admin(user_id) -> bool:
+    """返回 True 表示新增成功，False 表示已存在。"""
+    admins = get_admins()
+    if str(user_id) in admins:
+        return False
+    admins.append(str(user_id))
+    data = _read_json(CONFIG_FILE)
+    data["admins"] = admins
+    _write_json(CONFIG_FILE, data)
+    return True
+
+
+def remove_admin(user_id) -> bool:
+    """返回 True 表示删除成功，False 表示原本不在名单。"""
+    admins = get_admins()
+    if str(user_id) not in admins:
+        return False
+    admins = [a for a in admins if a != str(user_id)]
+    data = _read_json(CONFIG_FILE)
+    data["admins"] = admins
+    _write_json(CONFIG_FILE, data)
+    return True
+
+
 # ---------- 配置 ----------
 def get_base_url() -> str:
     return (_read_json(CONFIG_FILE).get("base_url") or "").rstrip("/")
