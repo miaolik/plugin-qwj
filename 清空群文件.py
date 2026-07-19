@@ -10,7 +10,13 @@ from core.plugin.decorators import handler
 from .store import (
     log, get_user_cookie, set_user_cookie, get_skey, calc_bkn,
     get_base_url, set_base_url, create_login_token,
+    is_admin, add_admin, remove_admin, get_admins,
 )
+
+
+async def _require_admin(event) -> bool:
+    """仅白名单管理员可操作；非管理员静默忽略，避免打扰普通用户。"""
+    return is_admin(event.user_id)
 
 
 async def safe_json(text: str) -> dict | None:
@@ -120,9 +126,11 @@ async def delete_batch(session, group_id, cookie_str, batch_files, max_retries=3
     return False
 
 # ---------- 指令 ----------
-@handler(r'^(登录群文件|登录)$', name='登录群文件', desc='获取扫码登录链接并自动提取CK', owner_only=True)
+@handler(r'^(登录群文件|登录)$', name='登录群文件', desc='获取扫码登录链接并自动提取CK')
 async def cmd_login(event, match):
-    """发送带令牌的登录链接：主人在浏览器打开→扫码→后端自动提取并保存 CK。"""
+    """发送带令牌的登录链接：管理员在浏览器打开→扫码→后端自动提取并保存 CK。"""
+    if not await _require_admin(event):
+        return
     base = get_base_url()
     if not base:
         await event.reply(
@@ -145,8 +153,10 @@ async def cmd_login(event, match):
         msg_type=2,
     )
 
-@handler(r'^设置登录地址\s+(\S+)$', name='设置登录地址', desc='配置登录页外网地址', owner_only=True)
+@handler(r'^设置登录地址\s+(\S+)$', name='设置登录地址', desc='配置登录页外网地址')
 async def cmd_set_base(event, match):
+    if not await _require_admin(event):
+        return
     url = match.group(1).strip()
     if not url.startswith(("http://", "https://")):
         await event.reply("❌ 地址需以 http:// 或 https:// 开头～")
@@ -155,8 +165,10 @@ async def cmd_set_base(event, match):
     log(f"用户 {event.user_id} 设置登录地址")
     await event.reply(f"✅ 已保存登录页地址：\n`{url.rstrip('/')}`\n现在可发送「登录」获取登录链接～", msg_type=2)
 
-@handler(r'^群文件登录\s+(.+)', name='群文件登录', desc='保存当前主人的群文件Cookie', owner_only=True)
+@handler(r'^群文件登录\s+(.+)', name='群文件登录', desc='保存当前管理员的群文件Cookie')
 async def cmd_save_cookie(event, match):
+    if not await _require_admin(event):
+        return
     cookie_str = match.group(1).strip()
     if 'skey=' not in cookie_str:
         await event.reply("❌ Cookie 无效，缺少 skey 字段～")
@@ -165,8 +177,42 @@ async def cmd_save_cookie(event, match):
     log(f"用户 {event.user_id} 更新Cookie")
     await event.reply("✅ Cookie 已保存，31天内有效～")
 
-@handler(r'^清空群文件\s+(\d+)$', name='清空群文件', desc='清空指定群的所有文件（主人用）', owner_only=True)
+@handler(r'^(添加管理员|新增管理员)\s+(\S+)$', name='添加管理员', desc='把用户加入群文件管理员白名单')
+async def cmd_add_admin(event, match):
+    if not await _require_admin(event):
+        return
+    target = match.group(2).strip()
+    ok = add_admin(target)
+    log(f"用户 {event.user_id} 添加管理员 {target} -> {ok}")
+    if ok:
+        await event.reply(f"✅ 已添加管理员：\n`{target}`", msg_type=2)
+    else:
+        await event.reply("ℹ️ 该用户已在管理员名单中～")
+
+@handler(r'^删除管理员\s+(\S+)$', name='删除管理员', desc='把用户移出群文件管理员白名单')
+async def cmd_del_admin(event, match):
+    if not await _require_admin(event):
+        return
+    target = match.group(1).strip()
+    ok = remove_admin(target)
+    log(f"用户 {event.user_id} 删除管理员 {target} -> {ok}")
+    if ok:
+        await event.reply(f"✅ 已移除管理员：\n`{target}`", msg_type=2)
+    else:
+        await event.reply("ℹ️ 该用户不在管理员名单中～")
+
+@handler(r'^管理员列表$', name='管理员列表', desc='查看群文件管理员白名单')
+async def cmd_list_admin(event, match):
+    if not await _require_admin(event):
+        return
+    admins = get_admins()
+    body = "\n".join(f"`{a}`" for a in admins) if admins else "（空）"
+    await event.reply(f"👮 群文件管理员白名单（{len(admins)}）：\n{body}", msg_type=2)
+
+@handler(r'^清空群文件\s+(\d+)$', name='清空群文件', desc='清空指定群的所有文件（管理员用）')
 async def cmd_clear_files(event, match):
+    if not await _require_admin(event):
+        return
     group_id = match.group(1)
     user_id = event.user_id
     log(f"用户 {user_id} 请求清空群 {group_id}")
