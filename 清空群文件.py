@@ -11,6 +11,8 @@ import aiohttp
 from datetime import datetime
 from core.plugin.decorators import handler
 
+from .qr_login import QRSession
+
 # ---------- 配置 ----------
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_DIR = os.path.join(PLUGIN_DIR, "json")
@@ -183,15 +185,44 @@ async def delete_batch(session, group_id, cookie_str, batch_files, max_retries=3
     return False
 
 # ---------- 指令 ----------
-@handler(r'^登录群文件$', name='登录群文件', desc='获取群文件登录链接', owner_only=True)
+@handler(r'^(登录群文件|登录)$', name='登录群文件', desc='扫码登录群文件并自动提取CK', owner_only=True)
 async def cmd_login(event, match):
-    msg = (
-        "请在浏览器打开\n"
-        "https://ui.ptlogin2.qq.com/cgi-bin/login?style=9&appid=1600001573"
-        "&s_url=https://qun.qq.com/#/login&daid=761&hide_close_icon=0\n"
-        "授权完后复制Cookie后请发送\n群文件登录cookie 你的cookie"
-    )
-    await event.reply(msg)
+    """扫码登录：发送二维码 → 用户手机 QQ 扫码确认 → 自动提取 CK 并保存。"""
+    qr = QRSession()
+    try:
+        try:
+            png = await qr.fetch_qr()
+        except Exception as e:
+            log(f"获取二维码失败: {e}")
+            await event.reply("❌ 获取二维码失败，请稍后重试～")
+            return
+
+        await event.reply_image(png, "📱 请用手机 QQ 扫码并确认登录（约2分钟内有效）")
+
+        last_status = ""
+        deadline = time.time() + 110
+        while time.time() < deadline:
+            await asyncio.sleep(2)
+            res = await qr.poll()
+            status = res.get("status")
+            if status == "success":
+                set_user_cookie(event.user_id, res["cookie"])
+                log(f"用户 {event.user_id} 扫码登录成功，已保存CK")
+                await event.reply("✅ 登录成功，CK 已自动提取并保存（31天内有效）～\n现在可发送：清空群文件 群号")
+                return
+            if status == "scanned" and last_status != "scanned":
+                await event.reply("📲 已扫码，请在手机上点击「确认登录」～")
+            if status == "expired":
+                await event.reply("⌛ 二维码已失效，请重新发送 登录～")
+                return
+            if status == "error":
+                log(f"扫码登录错误: {res.get('message')}")
+                await event.reply(f"❌ 登录失败：{res.get('message')}")
+                return
+            last_status = status
+        await event.reply("⌛ 登录超时，请重新发送 登录～")
+    finally:
+        await qr.close()
 
 @handler(r'^群文件登录\s+(.+)', name='群文件登录', desc='保存当前主人的群文件Cookie', owner_only=True)
 async def cmd_save_cookie(event, match):
