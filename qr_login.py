@@ -12,9 +12,10 @@ import urllib.parse
 
 import aiohttp
 
-# QZone 兼容参数：登录后返回的 skey 对 *.qq.com（含 pan.qun.qq.com）通用
-APPID = 549000912
-DAID = 5
+# 群 qun.qq.com 官方扫码登录参数（与 https://qun.qq.com 登录页内嵌二维码一致）：
+# 登录后写入 .qq.com 域的 skey/uin，pan.qun 群文件接口用 g_tk(skey) 作 bkn 即可访问。
+APPID = 715030901
+DAID = 73
 S_URL = "https://qun.qq.com"
 
 _PTUICB_RE = None

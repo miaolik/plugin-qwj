@@ -1,82 +1,17 @@
 """
 群文件管理插件 - 每批20个文件，重算bkn，高并发无延迟重试
-指令（主人全局）：登录群文件、群文件登录cookie、清空群文件 [群号]
+指令（主人全局）：登录、设置登录地址 <url>、群文件登录 <cookie>、清空群文件 <群号>
 """
-import os
-import re
 import json
-import time
 import asyncio
 import aiohttp
-from datetime import datetime
 from core.plugin.decorators import handler
 
-from .qr_login import QRSession
+from .store import (
+    log, get_user_cookie, set_user_cookie, get_skey, calc_bkn,
+    get_base_url, set_base_url, create_login_token,
+)
 
-# ---------- 配置 ----------
-PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_DIR = os.path.join(PLUGIN_DIR, "json")
-COOKIE_FILE = os.path.join(STATE_DIR, "pancookie.json")
-LOG_FILE = os.path.join(PLUGIN_DIR, "mm.txt")
-
-def log(msg: str):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{timestamp}] {msg}"
-    print(line)
-    try:
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-    except:
-        pass
-
-# ---------- Cookie 管理 ----------
-def load_cookies():
-    if not os.path.exists(COOKIE_FILE):
-        return {}
-    try:
-        with open(COOKIE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        now = time.time()
-        valid = {}
-        for uid, info in data.items():
-            if isinstance(info, dict) and info.get("expire", 0) > now:
-                valid[uid] = info
-        if len(valid) != len(data):
-            save_cookies(valid)
-        return valid
-    except:
-        return {}
-
-def save_cookies(cookies: dict):
-    os.makedirs(STATE_DIR, exist_ok=True)
-    with open(COOKIE_FILE, "w", encoding="utf-8") as f:
-        json.dump(cookies, f)
-
-def get_user_cookie(user_id: str) -> str | None:
-    cookies = load_cookies()
-    info = cookies.get(user_id)
-    if info:
-        return info.get("cookie")
-    return None
-
-def set_user_cookie(user_id: str, cookie_str: str):
-    cookies = load_cookies()
-    cookies[user_id] = {
-        "cookie": cookie_str,
-        "expire": time.time() + 31 * 24 * 3600
-    }
-    save_cookies(cookies)
-
-# ---------- 工具 ----------
-def get_skey(cookie_str: str) -> str | None:
-    match = re.search(r'skey=([^;]+)', cookie_str)
-    return match.group(1) if match else None
-
-def calc_bkn(skey: str) -> int:
-    h = 5381
-    for c in skey:
-        h += (h << 5) + ord(c)
-    return h & 0x7fffffff
 
 async def safe_json(text: str) -> dict | None:
     try:
@@ -185,44 +120,40 @@ async def delete_batch(session, group_id, cookie_str, batch_files, max_retries=3
     return False
 
 # ---------- 指令 ----------
-@handler(r'^(登录群文件|登录)$', name='登录群文件', desc='扫码登录群文件并自动提取CK', owner_only=True)
+@handler(r'^(登录群文件|登录)$', name='登录群文件', desc='获取扫码登录链接并自动提取CK', owner_only=True)
 async def cmd_login(event, match):
-    """扫码登录：发送二维码 → 用户手机 QQ 扫码确认 → 自动提取 CK 并保存。"""
-    qr = QRSession()
-    try:
-        try:
-            png = await qr.fetch_qr()
-        except Exception as e:
-            log(f"获取二维码失败: {e}")
-            await event.reply("❌ 获取二维码失败，请稍后重试～")
-            return
+    """发送带令牌的登录链接：主人在浏览器打开→扫码→后端自动提取并保存 CK。"""
+    base = get_base_url()
+    if not base:
+        await event.reply(
+            "⚠ 还没配置登录页地址。请先发送：\n"
+            "设置登录地址 https://你的面板域名:5200\n"
+            "（填写机器人 Web 面板的外网可访问地址，然后再发「登录」）"
+        )
+        return
+    token = create_login_token(event.user_id)
+    url = f"{base}/api/ext/qwj/login?token={token}"
+    log(f"用户 {event.user_id} 生成登录链接")
+    content = (
+        "🔑 点下方按钮打开登录页（或复制链接到浏览器），用**群主/管理员**手机 QQ 扫码：\n"
+        f"`{url}`\n\n二维码在网页里实时生成、过期会自动刷新；扫码确认后 CK 自动保存，"
+        "随后回来发「清空群文件 群号」即可。链接 15 分钟内有效。"
+    )
+    await event.reply(
+        content,
+        buttons=[[{"text": "🔑 打开登录页", "link": url}]],
+        msg_type=2,
+    )
 
-        await event.reply_image(png, "📱 请用手机 QQ 扫码并确认登录（约2分钟内有效）")
-
-        last_status = ""
-        deadline = time.time() + 110
-        while time.time() < deadline:
-            await asyncio.sleep(2)
-            res = await qr.poll()
-            status = res.get("status")
-            if status == "success":
-                set_user_cookie(event.user_id, res["cookie"])
-                log(f"用户 {event.user_id} 扫码登录成功，已保存CK")
-                await event.reply("✅ 登录成功，CK 已自动提取并保存（31天内有效）～\n现在可发送：清空群文件 群号")
-                return
-            if status == "scanned" and last_status != "scanned":
-                await event.reply("📲 已扫码，请在手机上点击「确认登录」～")
-            if status == "expired":
-                await event.reply("⌛ 二维码已失效，请重新发送 登录～")
-                return
-            if status == "error":
-                log(f"扫码登录错误: {res.get('message')}")
-                await event.reply(f"❌ 登录失败：{res.get('message')}")
-                return
-            last_status = status
-        await event.reply("⌛ 登录超时，请重新发送 登录～")
-    finally:
-        await qr.close()
+@handler(r'^设置登录地址\s+(\S+)$', name='设置登录地址', desc='配置登录页外网地址', owner_only=True)
+async def cmd_set_base(event, match):
+    url = match.group(1).strip()
+    if not url.startswith(("http://", "https://")):
+        await event.reply("❌ 地址需以 http:// 或 https:// 开头～")
+        return
+    set_base_url(url)
+    log(f"用户 {event.user_id} 设置登录地址")
+    await event.reply(f"✅ 已保存登录页地址：\n`{url.rstrip('/')}`\n现在可发送「登录」获取登录链接～", msg_type=2)
 
 @handler(r'^群文件登录\s+(.+)', name='群文件登录', desc='保存当前主人的群文件Cookie', owner_only=True)
 async def cmd_save_cookie(event, match):
